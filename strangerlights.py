@@ -127,7 +127,15 @@ def colour_of_led(i):
 async def flicker_led(i):
     r, g, b = colour_of_led(i)
 
+    def reset_colour():
+        strip.setPixelColorRGB(i, r, g, b)
+        strip.show()
+
+    await asyncio.sleep(random.randint(1, 4))
     for _ in range(random.randint(1, 12)):
+        if showing_message:
+            reset_colour()
+            return
         strip.setPixelColor(i, OFF)
         strip.show()
         await asyncio.sleep(random.randint(10,50)/1000.0)
@@ -136,8 +144,7 @@ async def flicker_led(i):
         strip.setPixelColorRGB(i, nr, ng, nb)
         strip.show()
         await asyncio.sleep(random.randint(10,80)/1000.0)
-    strip.setPixelColorRGB(i, r, g, b)
-    strip.show()
+    reset_colour()
 
 
 async def flickering():
@@ -199,7 +206,7 @@ async def effects_loop():
     while True:
         if not showing_message:
             await flickering()
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(random.randint(1, 4))
 
 def main():
     formatter = "[%(asctime)s] %(name)s {%(filename)s:%(lineno)d} " \
