@@ -96,11 +96,12 @@ async def show_message(message):
     global showing_message
     showing_message = True
     await fade_out()
+    off()
     await asyncio.sleep(1)
     for char in message:
         i = LETTERS.find(char.lower())
         if i > -1:
-            await blink_led(i, RED)
+            await blink_led(i, random.choice(COLOURS))
     await asyncio.sleep(1)
     await fairy_lights(fade_in=True)
     showing_message = False
@@ -123,27 +124,25 @@ def colour_of_led(i):
     return red, green, blue
 
 
-def flicker_led(i):
+async def flicker_led(i):
     r, g, b = colour_of_led(i)
 
-    for _ in range(random.randint(3, 8)):
+    for _ in range(random.randint(1, 12)):
         strip.setPixelColor(i, OFF)
         strip.show()
-        sleep(random.randint(10,50)/1000.0)
+        await asyncio.sleep(random.randint(10,50)/1000.0)
         fade_factor = random.random()
         nr, ng, nb = int(r*fade_factor), int(g*fade_factor), int(b*fade_factor)
         strip.setPixelColorRGB(i, nr, ng, nb)
         strip.show()
-        sleep(random.randint(10,80)/1000.0)
+        await asyncio.sleep(random.randint(10,80)/1000.0)
     strip.setPixelColorRGB(i, r, g, b)
     strip.show()
 
 
-def flickering():
-    leds = random.sample(list(range(LED_COUNT)), LED_COUNT//4)
-    for i in leds:
-        flicker_led(i)
-        sleep(random.randint(300,500)/1000.0)
+async def flickering():
+    leds = random.sample(list(range(LED_COUNT)), LED_COUNT//8)
+    await asyncio.gather(*[flicker_led(i) for i in leds])
 
 
 def off():
@@ -198,7 +197,8 @@ async def mqtt_loop():
 
 async def effects_loop():
     while True:
-        print("Showing message: {}".format(showing_message))
+        if not showing_message:
+            await flickering()
         await asyncio.sleep(0.5)
 
 def main():
