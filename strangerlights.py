@@ -1,250 +1,215 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
-# Stranger Things Christmas Lights
-# Author: Paul Larson (djhazee@gmail.com)
-#
-# -Port of the Arduino NeoPixel library strandtest example (Adafruit).
-# -Uses the WS2811 to animate RGB light strings (I am using a 5V, 50x RGB LED strand)
-# -This will blink a designated light for each letter of the alphabet
-
-
-# Import libs used
-import time
+from colorsys import hsv_to_rgb
+from itertools import cycle
+from time import sleep
+import atexit
 import random
-from neopixel import *
+import logging
+import asyncio
 
-#Start up random seed
-random.seed()
+from rpi_ws281x import Color, PixelStrip
+import _rpi_ws281x as ws
+
+from hbmqtt.client import MQTTClient, ClientException
+from hbmqtt.mqtt.constants import QOS_0
+
+log = logging.getLogger("strangerlights")
 
 # LED strip configuration:
-LED_COUNT      = 50      # Number of LED pixels.
-LED_PIN        = 18      # GPIO pin connected to the pixels (must support PWM!).
-LED_FREQ_HZ    = 800000  # LED signal frequency in hertz (usually 800khz)
-LED_DMA        = 5       # DMA channel to use for generating signal (try 5)
-LED_BRIGHTNESS = 255     # Set to 0 for darkest and 255 for brightest
-LED_INVERT     = False   # True to invert the signal (when using NPN transistor level shift)
+LED_COUNT = 50
+LED_PIN = 18
+LED_TYPE = ws.WS2811_STRIP_RGB
 
 #Predefined Colors and Masks
-OFF = Color(0,0,0)
-WHITE = Color(255,255,255)
-RED = Color(255,0,0)
-GREEN = Color(0,255,0)
-BLUE = Color(0,0,255)
-PURPLE = Color(128,0,128)
-YELLOW = Color(255,255,0)
-ORANGE = Color(255,50,0)
-TURQUOISE = Color(64,224,208)
-RANDOM = Color(random.randint(0,255),random.randint(0,255),random.randint(0,255))
-
-#list of colors, tried to match the show as close as possible
-COLORS = [YELLOW,GREEN,RED,BLUE,ORANGE,TURQUOISE,GREEN,
-          YELLOW,PURPLE,RED,GREEN,BLUE,YELLOW,RED,TURQUOISE,GREEN,RED,BLUE,GREEN,ORANGE,
-          YELLOW,GREEN,RED,BLUE,ORANGE,TURQUOISE,RED,BLUE, 
-          ORANGE,RED,YELLOW,GREEN,PURPLE,BLUE,YELLOW,ORANGE,TURQUOISE,RED,GREEN,YELLOW,PURPLE,
-          YELLOW,GREEN,RED,BLUE,ORANGE,TURQUOISE,GREEN,BLUE,ORANGE] 
+OFF = Color(0, 0, 0)
+WHITE = Color(255, 255, 255)
+RED = Color(255, 0, 0)
+GREEN = Color(0, 255, 0)
+BLUE = Color(0, 0, 255)
+PURPLE = Color(128, 0, 128)
+YELLOW = Color(255, 255, 0)
+ORANGE = Color(255, 50, 0)
+TURQUOISE = Color(64, 224, 208)
 
 #bitmasks used in scaling RGB values
-REDMASK = 0b111111110000000000000000
-GREENMASK = 0b000000001111111100000000
-BLUEMASK = 0b000000000000000011111111
+REDMASK = 0xff0000
+GREENMASK = 0x00ff00
+BLUEMASK = 0x0000ff
 
-# Other vars
-ALPHABET = '*******abcdefghijklm********zyxwvutsrqpon*********'  #alphabet that will be used
-LIGHTSHIFT = 0  #shift the lights down the strand to the other end 
-FLICKERLOOP = 3  #number of loops to flicker
+#list of colors, tried to match the show as close as possible
+COLOURS = [YELLOW, GREEN, RED, BLUE, ORANGE, TURQUOISE, GREEN, YELLOW, PURPLE,
+           RED, GREEN, BLUE, YELLOW, RED, TURQUOISE, GREEN, RED, BLUE, GREEN,
+           ORANGE, YELLOW, GREEN, RED, BLUE, ORANGE, TURQUOISE, RED, BLUE,
+           ORANGE, RED, YELLOW, GREEN, PURPLE, BLUE, YELLOW, ORANGE, TURQUOISE,
+           RED, GREEN, YELLOW, PURPLE, YELLOW, GREEN, RED, BLUE, ORANGE,
+           TURQUOISE, GREEN, BLUE, ORANGE]
 
-def initLights(strip):
-  """
-  initializes the light strand colors 
+LETTERS = "----------a-b-cd-ef-g--hijklm--nopqrstuvwxyz"
+BLINK_ON = 1
+BLINK_OFF = 0.5
 
-  inputs: 
-    strip = color strip instance to action against
+MQTT_BROKER = "mqtt://10.0.1.216/"
+MQTT_TOPIC = "control/strangerlights"
 
-  outputs:
-    <none>
-  """
-  colorLen = len(COLORS)
-  #Initialize all LEDs
-  for i in range(len(ALPHABET)):
-    strip.setPixelColor(i+LIGHTSHIFT, COLORS[i%colorLen])
-  strip.show()
+MODES = []
 
-def blinkWords(strip, word):
-  """
-  blinks a string of letters
+strip = None
 
-  inputs: 
-    strip = color strip instance to action against
-    word = word to blink
+showing_message = False
 
-  outputs:
-    <none>
-  """
-  #create a list of jumbled ints
-  s = list(range(len(ALPHABET)))
-  random.shuffle(s)
 
-  #first, kill all lights in a semi-random fashion
-  for led in range(len(ALPHABET)):
-    strip.setPixelColor(s[led]+LIGHTSHIFT, OFF)
+def rainbow():
+    """ A simple colour wheel fade across the LEDs """
+    for i in range(LED_COUNT):
+        r, g, b = hsv_to_rgb(i/LED_COUNT, 1, 1)
+        r, g, b = [int(v * 255) for v in (r, g, b)]
+        strip.setPixelColorRGB(i, r, g, b)
     strip.show()
-    time.sleep(random.randint(10,80)/1000.0)
+MODES.append(rainbow)
 
-  #quick delay
-  time.sleep(1.75)
 
-  #if letter in alphabet, turn on 
-  #otherwise, stall
-  for character in word:
-    if character in ALPHABET:
-      strip.setPixelColor(ALPHABET.index(character)+LIGHTSHIFT, RED)
-      strip.show()
-      time.sleep(1)
-      strip.setPixelColor(ALPHABET.index(character)+LIGHTSHIFT, OFF)
-      strip.show()
-      time.sleep(.5)
-    else:
-      time.sleep(.75)
-
-def flicker(strip, ledNo):
-  """
-  creates a flickering effect on a bulb
-
-  inputs: 
-    strip = color strip instance to action against
-    ledNo = LED position on strand, as integer.
-
-  outputs:
-    <none>
-  """
-  #get origin LED color
-  origColor = strip.getPixelColor(ledNo)
-
-  #do FLICKERLOOP-1 loops of flickering  
-  for i in range(0,FLICKERLOOP-1):
-
-    #get current LED color, break out to individuals
-    currColor = strip.getPixelColor(ledNo)
-    currRed = (currColor & REDMASK) >> 16
-    currGreen = (currColor & GREENMASK) >> 8
-    currBlue = (currColor & BLUEMASK)
-
-    #turn off for a random short period of time
-    strip.setPixelColor(ledNo, OFF)
+async def fairy_lights(fade_in=False):
+    """ Standard fairy light colours along the strip """
+    leds = list(zip(range(LED_COUNT), cycle(COLOURS)))
+    random.shuffle(leds)
+    for i, colour in leds:
+        strip.setPixelColor(i, colour)
+        if fade_in:
+            strip.show()
+            await asyncio.sleep(random.randint(10,80)/1000.0)
     strip.show()
-    time.sleep(random.randint(10,50)/1000.0)
+MODES.append(fairy_lights)
 
-    #turn back on at random scaled color brightness
-    #modifier = random.randint(30,120)/100
-    modifier = 1
-    #TODO: fix modifier so each RGB value is scaled. 
-    #      Doesn't work that well so modifier is set to 1. 
-    newBlue = int(currBlue * modifier)
-    if newBlue > 255:
-      newBlue = 255
-    newRed = int(currRed * modifier)
-    if newRed > 255:
-      newRed = 255
-    newGreen = int(currGreen * modifier) 
-    if newGreen > 255:
-      newGreen = 255
-    strip.setPixelColor(ledNo, Color(newRed,newGreen,newBlue))
+
+async def fade_out():
+    leds = list(range(LED_COUNT))
+    random.shuffle(leds)
+    for i in leds:
+        strip.setPixelColor(i, OFF)
+        strip.show()
+        await asyncio.sleep(random.randint(10,80)/1000.0)
+
+
+async def show_message(message):
+    """ Display a message on the fairy lights, one letter at a time """
+    global showing_message
+    showing_message = True
+    await fade_out()
+    await asyncio.sleep(1)
+    for char in message:
+        i = LETTERS.find(char.lower())
+        if i > -1:
+            await blink_led(i, RED)
+    await asyncio.sleep(1)
+    await fairy_lights(fade_in=True)
+    showing_message = False
+
+
+async def blink_led(i, colour):
+    strip.setPixelColor(i, colour)
     strip.show()
-    #leave on for random short period of time
-    time.sleep(random.randint(10,80)/1000.0)
+    await asyncio.sleep(BLINK_ON)
+    strip.setPixelColor(i, OFF)
+    strip.show()
+    await asyncio.sleep(BLINK_OFF)
 
-  #restore original LED color
-  strip.setPixelColor(ledNo, origColor)
 
-def runBlink(strip):
-  """
-  blinks the RUN letters
+def colour_of_led(i):
+    colour = strip.getPixelColor(i)
+    red = (colour & REDMASK) >> 16
+    green = (colour & GREENMASK) >> 8
+    blue = (colour & BLUEMASK)
+    return red, green, blue
 
-  inputs: 
-    strip = color strip instance to action against
 
-  outputs:
-    <none>
-  """
-  word = "run"
-  #first blink the word "run", one letter at a time
-  blinkWords(strip, word)
+def flicker_led(i):
+    r, g, b = colour_of_led(i)
 
-  #now frantically blink all 3 letters
-  for loop in range(20):
-    #turn on all three letters at the same time
-    for character in word:
-      if character in ALPHABET:
-        strip.setPixelColor(ALPHABET.index(character)+LIGHTSHIFT, RED)
+    for _ in range(random.randint(3, 8)):
+        strip.setPixelColor(i, OFF)
+        strip.show()
+        sleep(random.randint(10,50)/1000.0)
+        fade_factor = random.random()
+        nr, ng, nb = int(r*fade_factor), int(g*fade_factor), int(b*fade_factor)
+        strip.setPixelColorRGB(i, nr, ng, nb)
+        strip.show()
+        sleep(random.randint(10,80)/1000.0)
+    strip.setPixelColorRGB(i, r, g, b)
     strip.show()
 
-    time.sleep(random.randint(15,100)/1000.0)
 
-    #turn off all three letters at the same time
-    for character in word:
-      if character in ALPHABET:
-        strip.setPixelColor(ALPHABET.index(character)+LIGHTSHIFT, OFF)
+def flickering():
+    leds = random.sample(list(range(LED_COUNT)), LED_COUNT//4)
+    for i in leds:
+        flicker_led(i)
+        sleep(random.randint(300,500)/1000.0)
+
+
+def off():
+    """ Switch everything off """
+    for i in range(LED_COUNT):
+        strip.setPixelColor(i, 0)
     strip.show()
 
-    time.sleep(random.randint(50,150)/1000.0)
 
-  #now frantically blink all lights 
-  for loop in range(15):
-    #initialize all the lights
-    initLights(strip)
+def lights_setup():
+    global strip
+    strip = PixelStrip(LED_COUNT, LED_PIN)
+    ws.ws2811_channel_t_strip_type_set(strip._channel, LED_TYPE)
+    strip.begin()
+    atexit.register(off)
 
-    time.sleep(random.randint(50,150)/1000.0)
+    # fairy_lights(strip)
+    # fade_out(strip)
+    # fairy_lights()
 
-    #kill all lights
-    for led in range(len(ALPHABET)):
-      strip.setPixelColor(led+LIGHTSHIFT, OFF)
-    strip.show()
 
-    time.sleep(random.randint(50,150)/1000.0)
+def lights_loop():
+    flickering()
 
-# Main program logic follows:
+    while True:
+        try:
+            pass
+        except KeyboardInterrupt:
+            break
+
+
+async def mqtt_loop():
+    client = MQTTClient()
+    await client.connect(MQTT_BROKER)
+    log.info("Connected")
+    await client.subscribe([(MQTT_TOPIC, QOS_0)])
+    log.info("Subscribed")
+    await fairy_lights()
+    try:
+        while True:
+            message = await client.deliver_message()
+            packet = message.publish_packet
+            topic = packet.variable_header.topic_name
+            payload = bytes(packet.payload.data)
+            log.debug("{}: {}".format(topic, payload))
+            await show_message(payload.decode())
+        await client.unsubscribe([(MQTT_TOPIC, QOS_0)])
+        await client.disconnect()
+        log.info("Disconnected")
+    except ClientException:
+        log.exception("A client exception occurred.")
+
+async def effects_loop():
+    while True:
+        print("Showing message: {}".format(showing_message))
+        await asyncio.sleep(0.5)
+
+def main():
+    formatter = "[%(asctime)s] %(name)s {%(filename)s:%(lineno)d} " \
+            "%(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.DEBUG, format=formatter)
+    lights_setup()
+    asyncio.ensure_future(mqtt_loop())
+    asyncio.ensure_future(effects_loop())
+    asyncio.get_event_loop().run_forever()
+
+
 if __name__ == '__main__':
-	# Create NeoPixel object with appropriate configuration.
-  strip = Adafruit_NeoPixel(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS)
-	# Intialize the library (must be called once before other functions).
-  strip.begin()
-
-  print ('Press Ctrl-C to quit.')
-
-
-  while True:
-
-    ##Initialize all LEDs
-    #for i in range(len(ALPHABET)):
-    #  strip.setPixelColor(i+LIGHTSHIFT, Color(random.randint(0,255),random.randint(0,255),random.randint(0,255)))
-    #  strip.show()
-
-    #initialize all the lights
-    initLights(strip)
-    
-    time.sleep(random.randint(5,15))
-
-    #flicker each light, no delay between each
-    for i in range(20):
-      flicker(strip,random.randint(LIGHTSHIFT,len(ALPHABET)+LIGHTSHIFT))
-      time.sleep(random.randint(10,50)/1000.0)
-
-    time.sleep(2)
-
-    #flash lights to word
-    word = 'its here'
-    blinkWords(strip, word)
-    runBlink(strip)
-    time.sleep(1)
-
-    #create a list of jumbled ints
-    s = list(range(len(ALPHABET)))
-    random.shuffle(s)
-
-    #turn on each light in a semi-random fasion
-    colorLen = len(COLORS)
-    #Initialize all LEDs
-    for i in range(len(ALPHABET)):
-      strip.setPixelColor(s[i]+LIGHTSHIFT, COLORS[s[i]%colorLen])
-      strip.show()
-      time.sleep(random.randint(10,80)/1000.0)
+    main()
