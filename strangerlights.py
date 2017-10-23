@@ -20,6 +20,7 @@ log = logging.getLogger("strangerlights")
 LED_COUNT = 50
 LED_PIN = 18
 LED_TYPE = ws.WS2811_STRIP_RGB
+LED_BRIGHTNESS = 128
 
 #Predefined Colors and Masks
 OFF = Color(0, 0, 0)
@@ -52,7 +53,7 @@ BLINK_OFF = 0.5
 MQTT_BROKER = "mqtt://10.0.1.216/"
 MQTT_TOPIC = "control/strangerlights"
 
-MODES = []
+EFFECTS = []
 
 strip = None
 
@@ -66,7 +67,6 @@ def rainbow():
         r, g, b = [int(v * 255) for v in (r, g, b)]
         strip.setPixelColorRGB(i, r, g, b)
     strip.show()
-MODES.append(rainbow)
 
 
 async def fairy_lights(fade_in=False):
@@ -79,7 +79,6 @@ async def fairy_lights(fade_in=False):
             strip.show()
             await asyncio.sleep(random.randint(10,80)/1000.0)
     strip.show()
-MODES.append(fairy_lights)
 
 
 async def fade_out():
@@ -95,6 +94,7 @@ async def show_message(message):
     """ Display a message on the fairy lights, one letter at a time """
     global showing_message
     showing_message = True
+    await flicker_all_bulbs()
     await fade_out()
     off()
     await asyncio.sleep(1)
@@ -147,9 +147,20 @@ async def flicker_led(i):
     reset_colour()
 
 
-async def flickering():
+async def flicker_bulbs():
     leds = random.sample(list(range(LED_COUNT)), LED_COUNT//8)
     await asyncio.gather(*[flicker_led(i) for i in leds])
+EFFECTS.append(flicker_bulbs)
+
+
+async def flicker_all_bulbs():
+    for _ in range(random.randint(3, 15)):
+        strip.setBrightness(random.randint(32, min(255, int(LED_BRIGHTNESS*1.5)) ))
+        strip.show()
+        await asyncio.sleep(random.randint(10,80)/1000.0)
+    strip.setBrightness(LED_BRIGHTNESS)
+    await fairy_lights()
+EFFECTS.append(flicker_all_bulbs)
 
 
 def off():
@@ -165,20 +176,6 @@ def lights_setup():
     ws.ws2811_channel_t_strip_type_set(strip._channel, LED_TYPE)
     strip.begin()
     atexit.register(off)
-
-    # fairy_lights(strip)
-    # fade_out(strip)
-    # fairy_lights()
-
-
-def lights_loop():
-    flickering()
-
-    while True:
-        try:
-            pass
-        except KeyboardInterrupt:
-            break
 
 
 async def mqtt_loop():
@@ -202,11 +199,12 @@ async def mqtt_loop():
     except ClientException:
         log.exception("A client exception occurred.")
 
+
 async def effects_loop():
     while True:
         if not showing_message:
-            await flickering()
-        await asyncio.sleep(random.randint(1, 4))
+            await random.choice(EFFECTS)()
+        await asyncio.sleep(random.randint(5, 10))
 
 def main():
     formatter = "[%(asctime)s] %(name)s {%(filename)s:%(lineno)d} " \
